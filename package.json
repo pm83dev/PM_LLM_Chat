@@ -1,0 +1,196 @@
+{
+  "name": "pm-autocomplete",
+  "displayName": "PM Autocomplete (Local LLM)",
+  "description": "Inline completion + Fix/Edit + Chat via llama-server",
+  "version": "1.3.0",
+  "publisher": "pm-software-automation",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": [
+      {
+        "title": "PM Autocomplete",
+        "properties": {
+          "pmAutocomplete.serverUrl": {
+            "type": "string",
+            "default": "http://localhost:8080",
+            "description": "URL base del server llama-server per autocomplete inline"
+          },
+          "pmAutocomplete.actionServerUrl": {
+            "type": "string",
+            "default": "",
+            "description": "URL base del server per Fix/Edit actions (vuoto = usa serverUrl)"
+          },
+          "pmAutocomplete.actionModelFamily": {
+            "type": "string",
+            "default": "qwen",
+            "enum": [
+              "gemma",
+              "qwen",
+              "llama"
+            ],
+            "description": "Famiglia modello per Fix/Edit — determina il chat template"
+          },
+          "pmAutocomplete.maxTokens": {
+            "type": "number",
+            "default": 80
+          },
+          "pmAutocomplete.actionMaxTokens": {
+            "type": "number",
+            "default": 1024
+          },
+          "pmAutocomplete.actionTimeoutMs": {
+            "type": "number",
+            "default": 60000,
+            "description": "Timeout ms per Fix/Edit (default 60s)"
+          },
+          "pmAutocomplete.temperature": {
+            "type": "number",
+            "default": 0.1
+          },
+          "pmAutocomplete.debounceMs": {
+            "type": "number",
+            "default": 400
+          },
+          "pmAutocomplete.enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "pmAutocomplete.includeRelatedFile": {
+            "type": "boolean",
+            "default": true,
+            "description": "Includi il file gemello (.html/.ts/.scss) come contesto nel prompt Fix/Edit"
+          },
+          "pmAutocomplete.includeDiagnostics": {
+            "type": "boolean",
+            "default": true,
+            "description": "Includi gli errori/warning attivi di VS Code nel prompt Fix"
+          }
+        }
+      },
+      {
+        "title": "PM Chat",
+        "properties": {
+          "pmChat.endpoint": {
+            "type": "string",
+            "default": "http://localhost:9000/v1/chat/completions",
+            "description": "Endpoint OpenAI-compatible per la chat (es. http://IP:9000/v1/chat/completions)"
+          },
+          "pmChat.model": {
+            "type": "string",
+            "default": "gemma4",
+            "description": "Nome modello da passare all'API chat"
+          },
+          "pmChat.systemPrompt": {
+            "type": "string",
+            "default": "You are an expert software developer. Use Angular 18 with Signals and standalone components. For .NET use minimal API or Worker Service.",
+            "description": "System prompt fisso per la chat"
+          },
+          "pmChat.autoContext": {
+            "type": "boolean",
+            "default": true,
+            "description": "Includi automaticamente file attivo, file gemello e simboli rilevanti dall'indice nel contesto della chat @pm"
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "pmAutocomplete.toggle",
+        "title": "PM Autocomplete: Toggle On/Off"
+      },
+      {
+        "command": "pmAutocomplete.fix",
+        "title": "PM LLM: Fix"
+      },
+      {
+        "command": "pmAutocomplete.edit",
+        "title": "PM LLM: Edit…"
+      },
+      {
+        "command": "pmAutocomplete.reindex",
+        "title": "PM LLM: Rebuild Workspace Index",
+        "icon": "$(database)"
+      },
+      {
+        "command": "pmChat.open",
+        "title": "PM Chat: Open",
+        "icon": "$(comment-discussion)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "pmAutocomplete.fix",
+          "when": "editorTextFocus",
+          "group": "1_modification@99"
+        },
+        {
+          "command": "pmAutocomplete.edit",
+          "when": "editorTextFocus",
+          "group": "1_modification@100"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "pmChat.open",
+          "group": "navigation"
+        },
+        {
+          "command": "pmAutocomplete.reindex",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "pmAutocomplete.fix",
+        "key": "ctrl+shift+.",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "pmChat.open",
+        "key": "ctrl+shift+c",
+        "when": "editorTextFocus"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "pmAutocomplete.chat",
+        "name": "pm",
+        "fullName": "PM Autocomplete",
+        "description": "Chat locale su llama-server (Gemma4/Qwen). Supporta contesto automatico e riferimenti a file.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "fix",
+            "description": "Correggi il codice selezionato"
+          },
+          {
+            "name": "edit",
+            "description": "Riscrivi il codice secondo istruzione"
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}
