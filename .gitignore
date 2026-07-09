@@ -20,3 +20,4 @@ npm-debug.log*
 
 # Environment variables (uncomment if you use .env files)
 # .env
+.pm_workspace_index.json
