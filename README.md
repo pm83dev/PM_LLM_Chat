@@ -30,12 +30,69 @@ Installa il `.vsix` in VS Code:
 ## Token FIM
 
 Usa i token `<|fim_prefix|>` / `<|fim_suffix|>` / `<|fim_middle|>` compatibili con:
+
 - Gemma (tutti i modelli)
 - CodeLlama, DeepSeek Coder, Qwen2.5-Coder
 - La maggior parte dei modelli serviti con llama-server recente
 
 Se il tuo modello usa token diversi (es. `<PRE>/<SUF>/<MID>` per CodeLlama old-style),  
 modifica le costanti in cima a `src/extension.ts`.
+
+## Chat con il Modello
+
+L'estensione include un **Chat Participant** integrato che puoi usare dalla chat di VS Code (`Ctrl+Shift+G` o cliccando sull'icona chat nella barra laterale).
+
+### Comandi disponibili
+
+| Comando | Descrizione                                                              |
+| ------- | ------------------------------------------------------------------------ |
+| `/edit` | Modifica il codice selezionato con un'istruzione (richiede selezione)    |
+| `/fix`  | Correggi errori nel codice selezionato (mostra diagnostica se abilitata) |
+
+### Riferimenti file (`#file`)
+
+Puoi includere contenuti di file nella chat in due modi:
+
+#### 1. Trascina e rilascia
+
+Tratta un file dall'**Explorer** di VS Code direttamente nella casella della chat. Il contenuto del file verrà aggiunto automaticamente al contesto.
+
+#### 2. Digita `#` seguito dal nome del file
+
+Nella casella della chat, digita `#` e inizia a scrivere il nome del file. Seleziona il file dalla lista che appare. Il contenuto verrà iniettato nel contesto prima del tuo prompt.
+
+**Esempio:**
+
+```text
+Spiega cosa fa questo codice #app.ts
+```
+
+### Contesto automatico
+
+La chat include automaticamente:
+
+- **File attivo** nell'editor (contenuto completo)
+- **File gemello** (es. se stai editando `app.ts`, viene incluso anche `app.html` se esiste)
+- **Simboli rilevanti** dall'indice del workspace (Code RAG) — solo quando il prompt ha più di 0 caratteri
+
+Puoi disabilitare il contesto automatico in settings:
+
+```json
+{ "pmChat.autoContext": false }
+```
+
+### Configurazione Chat (`settings.json`)
+
+```json
+{
+  "pmChat.endpoint": "http://localhost:9000/v1/chat/completions",
+  "pmChat.model": "gemma4",
+  "pmChat.systemPrompt": "You are an expert software developer.",
+  "pmChat.autoContext": true,
+  "pmChat.includeRelatedFile": true,
+  "pmChat.includeDiagnostics": false
+}
+```
 
 ## Toggle
 
