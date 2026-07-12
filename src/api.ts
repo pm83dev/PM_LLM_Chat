@@ -2,13 +2,45 @@ import * as vscode from 'vscode';
 import { stripThinkTags } from './utils';
 import { REQUEST_TIMEOUT_MS, STOP_SEQUENCES } from './config';
 
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
+// ──────────────────────────────────────────────
+// Chat message types (OpenAI-compatible, con supporto tool calling)
+// ──────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: ToolCall[];   // presente solo su messaggi assistant che hanno chiamato un tool
+  tool_call_id?: string;     // presente solo su messaggi role: 'tool' (risultato)
+  name?: string;             // nome del tool, usato insieme a tool_call_id
+}
+
+export interface ToolSpec {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: object;
+  };
+}
+
+export interface ToolCall {
+  index?: number;
+  id?: string;
+  type?: 'function';
+  function: { name?: string; arguments: string }; // arguments è una stringa JSON
+}
 
 export let activeController: AbortController | undefined;
 
 export function abortActiveRequests() {
   activeController?.abort();
 }
+
+// ──────────────────────────────────────────────
+// /completion — usata da fetchCompletion (FIM) e fetchAction (/fix, /edit)
+// Invariata: questi flussi non passano da chat template con ruoli, restano
+// completion pura con prompt costruito a mano per famiglia di modello.
+// ──────────────────────────────────────────────
 
 export async function callServer(
   prompt: string,
@@ -87,7 +119,7 @@ export async function fetchAction(
   fallbackUrl: string,
   family: string,
   actionMaxTokens: number,
-  actionTimeoutMs: number   // ← da settings, non più costante hardcoded
+  actionTimeoutMs: number
 ): Promise<string | null> {
   activeController?.abort();
   activeController = new AbortController();
@@ -101,13 +133,29 @@ export async function fetchAction(
   }
 }
 
+// ──────────────────────────────────────────────
+// /v1/chat/completions — usata dal Chat Participant, con tool calling nativo
+// ──────────────────────────────────────────────
+
+/**
+ * streamChat con supporto tool_calls (OpenAI-compatible, confermato funzionante
+ * su llama-server con Qwen3.6-35B-A3B via chat template Hermes/ChatML).
+ *
+ * Se il caller passa `tools`, li inoltra nel body come `tools` + `tool_choice: "auto"`.
+ * Se lo stream termina con finish_reason: "tool_calls", i tool_calls accumulati
+ * (gli argomenti arrivano frammentati su più delta, per index) vengono passati a
+ * onToolCalls invece di essere trattati come testo — niente più parsing regex
+ * sul contenuto grezzo.
+ */
 export async function streamChat(
   messages: ChatMessage[],
   chatEndpoint: string,
   chatModel: string,
   onChunk: (text: string) => void,
   onDone: () => void,
-  onError: (msg: string) => void
+  onError: (msg: string) => void,
+  tools?: ToolSpec[],
+  onToolCalls?: (calls: ToolCall[]) => void
 ): Promise<void> {
   const ctrl = new AbortController();
   const timeoutId = setTimeout(() => ctrl.abort(), 120000); // 2 min per chat
@@ -122,6 +170,7 @@ export async function streamChat(
         stream: true,
         temperature: 0.7,
         max_tokens: 2048,
+        ...(tools && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       }),
       signal: ctrl.signal,
     });
@@ -132,8 +181,10 @@ export async function streamChat(
     const reader    = response.body.getReader();
     const decoder   = new TextDecoder();
     let accumulated = '';
+    const toolCallsAcc = new Map<number, ToolCall>();
+    let finishReason: string | null = null;
 
-    while (true) {
+    outer: while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -143,19 +194,59 @@ export async function streamChat(
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
-        if (data === '[DONE]') { onDone(); return; }
+        if (data === '[DONE]') break outer;
 
         try {
-          const parsed = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
-          const content = parsed.choices?.[0]?.delta?.content;
+          const parsed = JSON.parse(data) as {
+            choices?: {
+              delta?: { content?: string; tool_calls?: ToolCall[] };
+              finish_reason?: string | null;
+            }[];
+          };
+          const choice = parsed.choices?.[0];
+          if (!choice) continue;
+
+          const content = choice.delta?.content;
           if (content) {
             accumulated += content;
             const clean = stripThinkTags(accumulated);
             if (clean) onChunk(clean);
           }
+
+          const deltaCalls = choice.delta?.tool_calls;
+          if (deltaCalls) {
+            for (const dc of deltaCalls) {
+              const idx = dc.index ?? 0;
+              const existing = toolCallsAcc.get(idx);
+              if (!existing) {
+                toolCallsAcc.set(idx, {
+                  index: idx,
+                  id: dc.id,
+                  type: 'function',
+                  function: {
+                    name: dc.function?.name,
+                    arguments: dc.function?.arguments ?? '',
+                  },
+                });
+              } else {
+                // arguments arriva a pezzi — va concatenato, mai sovrascritto
+                existing.function.arguments += dc.function?.arguments ?? '';
+                if (dc.function?.name) existing.function.name = dc.function.name;
+                if (dc.id) existing.id = dc.id;
+              }
+            }
+          }
+
+          if (choice.finish_reason) finishReason = choice.finish_reason;
         } catch { /* skip partial JSON */ }
       }
+      if (finishReason) break;
     }
+
+    if (finishReason === 'tool_calls' && toolCallsAcc.size > 0 && onToolCalls) {
+      onToolCalls(Array.from(toolCallsAcc.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)));
+    }
+
     onDone();
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {

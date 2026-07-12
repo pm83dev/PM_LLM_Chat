@@ -230,3 +230,36 @@ export function formatSymbolsBlock(symbols: SymbolEntry[]): string {
   const lines = symbols.map(s => `- ${s.kind} \`${s.name}\` in ${s.file}:${s.line} — ${s.preview}`);
   return `\nProject symbols referenced in this code:\n${lines.join('\n')}`;
 }
+
+/**
+ * Search symbols by name, for Chat Participant user queries (natural-language search).
+ * Unlike findRelevantSymbols: case-insensitive substring match, no PascalCase requirement.
+ */
+export function searchSymbolsByName(
+  query: string,
+  index: WorkspaceIndex,
+  maxResults = 10,
+): SymbolEntry[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  const scored = index.symbols
+    .filter(s => s.name.toLowerCase().includes(q))
+    .map(entry => {
+      const exact = entry.name.toLowerCase() === q;
+      const kindScore = ['interface', 'class', 'record', 'service', 'component'].includes(entry.kind) ? 2 : 1;
+      return { entry, score: (exact ? 10 : 0) + kindScore };
+    });
+
+  const seen = new Set<string>();
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .filter(({ entry }) => {
+      const key = `${entry.name}:${entry.file}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maxResults)
+    .map(({ entry }) => entry);
+}
