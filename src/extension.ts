@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { abortActiveRequests, fetchAction, fetchCompletion } from "./api";
 import { disposeChatPanel } from "./chatPanel";
 import { handleChatRequest } from "./chatParticipant";
+import { registerChatTools } from "./chatTools";
 import {
   FIM_MIDDLE,
   FIM_PREFIX,
@@ -295,6 +296,9 @@ export function activate(context: vscode.ExtensionContext) {
     "pmAutocomplete.chat",
     handleChatRequest,
   );
+
+  // Register tools so VS Code can inject context automatically (Copilot Chat UX)
+  registerChatTools(context);
 
   // Re-index on file save (debounced — only TS/CS files)
   const onSave = vscode.workspace.onDidSaveTextDocument((doc) => {

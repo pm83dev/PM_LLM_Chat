@@ -98,3 +98,26 @@ Puoi disabilitare il contesto automatico in settings:
 
 Click sull'icona `⚡ PM LLM` nella status bar in basso a destra,  
 oppure `Ctrl+Shift+P` → *PM Autocomplete: Toggle On/Off*.
+
+---
+
+## Allineamento con Copilot Chat
+
+Questa estensione è progettata per offrire un'esperienza il più possibile simile a **GitHub Copilot Chat**, sfruttando le API native di VS Code:
+
+### Strumenti nativi (Language Model Tools API)
+
+La chat registra automaticamente due strumenti che VS Code può iniettare nel contesto:
+
+| Strumento           | Descrizione                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `current-file`      | Legge il contenuto del file attivo nell'editor quando l'utente non ha trascinato file |
+| `workspace-symbols` | Cerca simboli rilevanti (componenti, servizi, interfacce) nell'indice del workspace   |
+
+### Riferimenti cliccabili (AnchorPart)
+
+Quando trascini file nella chat, i riferimenti appaiono come **link cliccabili nativi** (in VS Code Insiders) che aprono direttamente il file.
+
+### Progresso dinamico
+
+I messaggi di progresso vengono aggiornati durante l'elaborazione per dare feedback all'utente in tempo reale.

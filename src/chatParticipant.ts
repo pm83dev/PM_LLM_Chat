@@ -129,27 +129,40 @@ async function buildAutoContext(
 }
 
 /**
- * Fase 3 — #file references native.
+ * Fase 3 — #file references con AnchorPart nativo.
  * Legge request.references (file trascinati o referenziati con #nomefile)
- * e li aggiunge al blocco di contesto. Deduplica il file attivo e il suo
- * gemello, già inclusi da buildContextBlock().
+ * e li restituisce come array di { uri, content } per consentire al caller
+ * di scegliere tra contesto inline (stream.markdown) o link nativi (stream.anchor).
  */
+interface ReferencedFile {
+  uri: vscode.Uri;
+  filename: string;
+  lang: string;
+  content: string;
+}
+
 async function collectReferencedFiles(
   request: vscode.ChatRequest,
-): Promise<string> {
-  if (request.references.length === 0) return "";
+): Promise<ReferencedFile[]> {
+  if (request.references.length === 0) return [];
 
   const editor = vscode.window.activeTextEditor;
   const activeBase = editor
     ? editor.document.uri.fsPath.replace(/\.[^.\\/]+$/, "") + "."
     : null;
 
-  let out = "";
+  const results: ReferencedFile[] = [];
   for (const ref of request.references) {
     const value = ref.value;
 
     if (typeof value === "string") {
-      out += `\nReference:\n${value}\n`;
+      // String reference — non abbiamo un URI, restituisci come testo puro
+      results.push({
+        uri: null as unknown as vscode.Uri,
+        filename: "reference",
+        lang: "text",
+        content: value,
+      });
       continue;
     }
 
@@ -157,13 +170,22 @@ async function collectReferencedFiles(
     if (!uri || isAlreadyIncluded(uri, activeBase)) continue;
 
     try {
-      const content = await readReferencedFile(uri);
-      if (content) out += content;
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      let text = Buffer.from(bytes).toString("utf8");
+      if (text.length > MAX_REFERENCE_CHARS) {
+        text = text.slice(0, MAX_REFERENCE_CHARS) + "\n... [truncated]";
+      }
+      const filename = getFilename(uri);
+      const lang = getExtension(filename) ?? "";
+      results.push({ uri, filename, lang, content: text });
     } catch {
       // file non leggibile — skip
+      console.debug(
+        `[PM Chat Participant] Could not read referenced file: ${uri?.fsPath}`,
+      );
     }
   }
-  return out;
+  return results;
 }
 
 /**
@@ -252,7 +274,7 @@ async function handleActionCommand(
       ? `${contextBlock}${symbolsBlock}\n\nFix this ${lang} code:\n\`\`\`\n${selectedText}\n\`\`\``
       : `${contextBlock}${symbolsBlock}\n\nInstruction: ${request.prompt}\n\nCode:\n\`\`\`\n${selectedText}\n\`\`\``;
 
-  stream.progress("Interrogo il modello…");
+  stream.progress("Analizzo il codice selezionato…");
 
   const result = await fetchAction(
     system,
@@ -263,6 +285,8 @@ async function handleActionCommand(
     cfg.actionMaxTokens,
     cfg.actionTimeoutMs,
   );
+
+  stream.progress("Elaborazione completata");
 
   if (!result || result.trim().length === 0) {
     stream.markdown("⚠️ Nessun risultato dal server.");
@@ -333,7 +357,21 @@ export async function handleChatRequest(
   const autoContext = autoContextEnabled
     ? await buildAutoContext(request.prompt, workspaceIndex)
     : "";
-  const referencesBlock = await collectReferencedFiles(request);
+  const referencedFiles = await collectReferencedFiles(request);
+
+  // Costruisci il blocco di contesto per l'API (tutto in un string)
+  let referencesBlock = "";
+  for (const ref of referencedFiles) {
+    if (ref.uri && vscode.env.appName.includes("Insiders")) {
+      // Per Insiders: usa AnchorPart nativo (link cliccabile)
+      stream.anchor(ref.uri, ref.filename);
+    } else if (ref.uri) {
+      referencesBlock += `\nReferenced file (${ref.filename}):\n\`\`\`${ref.lang}\n${ref.content}\n\`\`\`\n`;
+    } else {
+      // String reference senza URI
+      referencesBlock += `\nReference:\n${ref.content}\n`;
+    }
+  }
 
   // 4. Gestisci Session Summary (solo al primo turno della conversazione)
   let sessionSummary = "";
@@ -369,7 +407,7 @@ export async function handleChatRequest(
   }
 
   // Aggiungi la cronologia della chat precedente (limitata per risparmiare token)
-  const recentHistory = context.history.slice(-10); // Ultimi 10 turni
+  const recentHistory = context.history.slice(-10);
   for (const turn of recentHistory) {
     if (turn instanceof vscode.ChatRequestTurn) {
       messages.push({ role: "user", content: turn.prompt });
@@ -394,6 +432,8 @@ export async function handleChatRequest(
   // mentre stream.markdown() appende — quindi emettiamo solo il delta.
   let renderedLength = 0;
   let finalText = "";
+
+  stream.progress("Elaborazione richiesta…");
 
   await streamChat(
     messages,
