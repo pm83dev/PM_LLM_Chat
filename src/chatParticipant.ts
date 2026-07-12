@@ -1,6 +1,10 @@
 import * as vscode from "vscode";
 import { ChatMessage, fetchAction, streamChat, ToolCall } from "./api";
-import { executeTool, TOOL_SPECS } from "./chatTools";
+import {
+  executeTool,
+  FILE_READ_TOOLS,
+  TOOL_SPECS,
+} from "./chatTools";
 import { loadConfig } from "./config";
 import { buildContextBlock } from "./context";
 import { parseFileEdits, ProposedEdit } from "./edits";
@@ -21,7 +25,28 @@ import * as path from "path";
 const SUMMARY_FILENAME = ".pm_context_summary.json";
 const MAX_CONTEXT_CHARS = 3000; // Soglia simile a quella usata in chatPanel.ts per inject file
 const MAX_REFERENCE_CHARS = 3000; // Cap per ogni file referenziato con #file
-const MAX_TOOL_ROUNDS = 3; // Limite di round tool-call consecutivi, evita loop infiniti
+const MAX_TOOL_ROUNDS = 6; // Alzato da 3: l'esplorazione stile Copilot (search → read → grep) usa più round
+const MAX_FILE_READS_PER_TURN = 8; // Cap separato sulle letture file (current-file/read-file), per non saturare i 131072 token di contesto con letture a raffica
+
+/**
+ * Istruzione sul formato marker per l'apply automatico in chat libera.
+ * Riusa esattamente il contratto già supportato da parseFileEdits/edits.ts
+ * (```linguaggio:percorso/relativo.ext, file COMPLETO, niente placeholder).
+ * Iniettata sempre nel system prompt: se il modello non conosce il contenuto
+ * integrale del file, l'istruzione stessa gli dice di non usare il marker,
+ * quindi non c'è downside a tenerla sempre attiva.
+ */
+const EDIT_FORMAT_INSTRUCTION = `
+
+--- FILE EDIT FORMAT ---
+When you want to propose a change to a file the user can apply with one click, open the code block with:
+\`\`\`<language>:<relative/path/to/file.ext>
+
+Rules, no exceptions:
+1. Only use this format when you know the file's FULL current content (you read it via current-file or read-file in this conversation, or it's shown in the context above).
+2. The code block must contain the ENTIRE file content after your change — never partial snippets, never placeholders like "// rest unchanged" or "// other methods". A partial file would overwrite and destroy the rest of the file when applied.
+3. If you don't have the full file content, or the user just wants to see example code (not apply it to a specific file), use a plain \`\`\`<language> block with no path — do NOT guess a path.
+4. Use forward slashes and a path relative to the workspace root (e.g. ResaBackend/Controllers/QuoteController.cs).`;
 
 /**
  * Carica il summary dalla disk se presente.
@@ -306,8 +331,7 @@ async function handleActionCommand(
 
 /**
  * Esegue un singolo round di streamChat, ritornando il testo finale e gli
- * eventuali tool_calls richiesti dal modello. Isolato per essere richiamabile
- * più volte nel loop di tool calling senza duplicare la gestione del progress/onChunk.
+ * eventuali tool_calls richiesti dal modello.
  */
 async function runChatRound(
   messages: ChatMessage[],
@@ -315,11 +339,7 @@ async function runChatRound(
   model: string,
   stream: vscode.ChatResponseStream,
   renderedLengthRef: { value: number },
-): Promise<{
-  finalText: string;
-  toolCalls: ToolCall[] | null;
-  error: string | null;
-}> {
+): Promise<{ finalText: string; toolCalls: ToolCall[] | null; error: string | null }> {
   let finalText = "";
   let toolCalls: ToolCall[] | null = null;
   let error: string | null = null;
@@ -331,10 +351,7 @@ async function runChatRound(
     (fullText) => {
       finalText = fullText;
       const delta = fullText.slice(renderedLengthRef.value);
-      renderedLengthRef.value = Math.max(
-        renderedLengthRef.value,
-        fullText.length,
-      );
+      renderedLengthRef.value = Math.max(renderedLengthRef.value, fullText.length);
       if (delta) stream.markdown(delta);
     },
     () => {
@@ -366,14 +383,16 @@ export async function handleChatRequest(
     return handleActionCommand(request, stream);
   }
 
-  // Messaggio informativo al primo turno — puramente descrittivo, non condiziona
-  // più il comportamento del modello (i tool sono sempre passati via TOOL_SPECS).
+  // Messaggio informativo al primo turno — puramente descrittivo.
   if (context.history.length === 0) {
     stream.markdown(
       "**Strumenti disponibili:**\n\n" +
         `| Strumento | Descrizione |\n|-----------|-------------|\n` +
         "| 📄 File Attivo | Legge il contenuto del file aperto nell'editor |\n" +
-        "| 🔍 Workspace Symbols | Cerca simboli (componenti, servizi, classi) nel workspace |\n\n",
+        "| 🔍 Workspace Symbols | Cerca simboli (componenti, servizi, classi) nel workspace |\n" +
+        "| 🗂️ Search Files | Trova file per pattern glob |\n" +
+        "| 📖 Read File | Legge un file per path, anche se non aperto |\n" +
+        "| 🔎 Grep Text | Cerca testo libero nei file del workspace |\n\n",
     );
   }
 
@@ -420,10 +439,14 @@ export async function handleChatRequest(
   }
 
   // 5. Costruisci i messaggi per l'API.
-  // Niente più TOOLS_BLOCK testuale né istruzioni XML: i tool sono comunicati
-  // al modello via il campo `tools` della request (vedi TOOL_SPECS in chatTools.ts),
-  // non descritti a parole nel system prompt.
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+  // I tool sono comunicati via il campo `tools` (TOOL_SPECS), non descritti a
+  // parole. L'unica istruzione testuale che aggiungiamo riguarda il FORMATO
+  // di output atteso quando il modello propone una modifica applicabile
+  // (EDIT_FORMAT_INSTRUCTION) — non è una descrizione di tool, è un contratto
+  // di formattazione che parseFileEdits si aspetta.
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt + EDIT_FORMAT_INSTRUCTION },
+  ];
 
   if (sessionSummary) {
     messages.push({ role: "system", content: sessionSummary });
@@ -462,20 +485,17 @@ export async function handleChatRequest(
 
   messages.push({ role: "user", content: request.prompt });
 
-  // 6. Loop di tool calling: al massimo MAX_TOOL_ROUNDS round prima di forzare
-  // una risposta testuale, per evitare loop infiniti se il modello continua
-  // a richiedere tool.
+  // 6. Loop di tool calling: max MAX_TOOL_ROUNDS round, con cap separato sulle
+  // letture file (current-file/read-file) per non saturare il contesto se il
+  // modello prova a leggere molti file in un solo turno.
   const renderedLengthRef = { value: 0 };
   let finalText = "";
+  let fileReadsUsed = 0;
 
   stream.progress("Elaborazione richiesta…");
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const {
-      finalText: roundText,
-      toolCalls,
-      error,
-    } = await runChatRound(
+    const { finalText: roundText, toolCalls, error } = await runChatRound(
       messages,
       endpoint,
       model,
@@ -491,7 +511,6 @@ export async function handleChatRequest(
     finalText = roundText;
 
     if (!toolCalls || toolCalls.length === 0) {
-      // Nessun tool richiesto: questa è la risposta finale.
       break;
     }
 
@@ -502,8 +521,6 @@ export async function handleChatRequest(
       break;
     }
 
-    // Il modello ha richiesto uno o più tool: esegui ed inietta i risultati,
-    // poi ripeti il round così il modello può formulare la risposta finale.
     stream.progress("Esecuzione tool…");
 
     messages.push({
@@ -514,7 +531,15 @@ export async function handleChatRequest(
 
     for (const call of toolCalls) {
       const toolName = call.function.name ?? "";
-      const result = executeTool(toolName, call.function.arguments);
+      let result: string;
+
+      if (FILE_READ_TOOLS.has(toolName) && fileReadsUsed >= MAX_FILE_READS_PER_TURN) {
+        result = `⚠️ Limite di ${MAX_FILE_READS_PER_TURN} letture file raggiunto per questo turno. Rispondi con quanto hai già trovato, o chiedi all'utente di restringere la richiesta.`;
+      } else {
+        result = await executeTool(toolName, call.function.arguments);
+        if (FILE_READ_TOOLS.has(toolName)) fileReadsUsed++;
+      }
+
       messages.push({
         role: "tool",
         tool_call_id: call.id ?? "",
@@ -527,8 +552,11 @@ export async function handleChatRequest(
     renderedLengthRef.value = 0;
   }
 
-  // 7. Fase 4 — se la risposta contiene blocchi con marker di file
-  // (```lang:percorso), proponi l'apply via WorkspaceEdit
+  // 7. Se la risposta contiene blocchi con marker di file (```lang:percorso),
+  // proponi l'apply via WorkspaceEdit — funziona sia per file già noti sia per
+  // file scoperti nel loop di tool calling qui sopra (search-files/read-file),
+  // perché parseFileEdits lavora solo sul testo finale, non sa da dove viene
+  // la conoscenza del path.
   const proposedEdits = parseFileEdits(finalText);
   if (proposedEdits.length > 0) {
     const fileList = proposedEdits.map((e) => `- \`${e.filePath}\``).join("\n");
