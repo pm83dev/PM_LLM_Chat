@@ -146,16 +146,23 @@ export async function fetchAction(
  * (gli argomenti arrivano frammentati su più delta, per index) vengono passati a
  * onToolCalls invece di essere trattati come testo — niente più parsing regex
  * sul contenuto grezzo.
+ *
+ * onDone riceve il finish_reason finale ("stop", "length", "tool_calls", o null):
+ * "length" significa risposta TRONCATA dal limite di token — il caller deve
+ * poterlo distinguere da un completamento normale invece di fingere che il
+ * modello abbia finito (bug osservato: file riscritto a metà, apply impossibile).
  */
 export async function streamChat(
   messages: ChatMessage[],
   chatEndpoint: string,
   chatModel: string,
   onChunk: (text: string) => void,
-  onDone: () => void,
+  onDone: (finishReason?: string | null) => void,
   onError: (msg: string) => void,
   tools?: ToolSpec[],
-  onToolCalls?: (calls: ToolCall[]) => void
+  onToolCalls?: (calls: ToolCall[]) => void,
+  maxTokens?: number,
+  toolChoice?: 'auto' | 'none'
 ): Promise<void> {
   const ctrl = new AbortController();
   const timeoutId = setTimeout(() => ctrl.abort(), 120000); // 2 min per chat
@@ -169,8 +176,13 @@ export async function streamChat(
         messages,
         stream: true,
         temperature: 0.7,
-        max_tokens: 2048,
-        ...(tools && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+        max_tokens: maxTokens ?? 2048,
+        // tool_choice 'none' consente un round di chiusura in cui il modello DEVE
+        // rispondere con testo (usato al raggiungimento del limite di round):
+        // i tool restano nel body così il chat template resta identico.
+        ...(tools && tools.length > 0
+          ? { tools, tool_choice: toolChoice ?? 'auto' }
+          : {}),
       }),
       signal: ctrl.signal,
     });
@@ -247,7 +259,7 @@ export async function streamChat(
       onToolCalls(Array.from(toolCallsAcc.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)));
     }
 
-    onDone();
+    onDone(finishReason);
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
       onError('Request timed out');

@@ -2,7 +2,7 @@
   "name": "pm-autocomplete",
   "displayName": "PM Autocomplete (Local LLM)",
   "description": "Inline completion + Fix/Edit + Chat via llama-server",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"
@@ -98,6 +98,11 @@
             "type": "boolean",
             "default": true,
             "description": "Includi automaticamente file attivo, file gemello e simboli rilevanti dall'indice nel contesto della chat @pm"
+          },
+          "pmChat.maxTokens": {
+            "type": "number",
+            "default": 8192,
+            "description": "Numero massimo di token di output per ogni risposta della chat @pm (max_tokens). Se la risposta viene troncata con l'avviso 'Risposta troncata', aumenta questo valore."
           }
         }
       }
