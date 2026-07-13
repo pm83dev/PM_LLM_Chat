@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'nonce-{{NONCE}}'; script-src 'nonce-{{NONCE}}';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PM Chat</title>
+    <style nonce="{{NONCE}}">
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--vscode-font-family);
+        font-size: var(--vscode-font-size);
+        color: var(--vscode-foreground);
+        background: var(--vscode-sideBar-background);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+      }
+      #toolbar {
+        display: flex;
+        gap: 6px;
+        padding: 8px;
+        border-bottom: 1px solid var(--vscode-panel-border);
+        flex-shrink: 0;
+      }
+      button {
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: none;
+        border-radius: 3px;
+        padding: 4px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      button:hover {
+        background: var(--vscode-button-hoverBackground);
+      }
+      button.secondary {
+        background: var(--vscode-button-secondaryBackground);
+        color: var(--vscode-button-secondaryForeground);
+      }
+      button.secondary:hover {
+        background: var(--vscode-button-secondaryHoverBackground);
+      }
+      #messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .msg {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 100%;
+      }
+      .msg-label {
+        font-size: 10px;
+        opacity: 0.6;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .msg-user .msg-label {
+        text-align: right;
+      }
+      .msg-body {
+        padding: 8px 10px;
+        border-radius: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.5;
+      }
+      .msg-user .msg-body {
+        background: var(--vscode-inputOption-activeBackground);
+        align-self: flex-end;
+        max-width: 85%;
+      }
+      .msg-assistant .msg-body {
+        background: var(--vscode-editor-inactiveSelectionBackground);
+        align-self: flex-start;
+        white-space: normal;
+      }
+      .msg-system .msg-body {
+        background: transparent;
+        font-size: 11px;
+        opacity: 0.6;
+        font-style: italic;
+        align-self: center;
+      }
+      code {
+        font-family: var(--vscode-editor-font-family);
+        font-size: 12px;
+      }
+      pre {
+        background: var(--vscode-textCodeBlock-background);
+        padding: 8px;
+        border-radius: 4px;
+        overflow-x: auto;
+        margin: 4px 0;
+        white-space: pre;
+      }
+      pre code {
+        white-space: pre;
+      }
+      .msg-body h1,
+      .msg-body h2,
+      .msg-body h3 {
+        margin: 8px 0 4px;
+        font-weight: 600;
+      }
+      .msg-body h1 {
+        font-size: 1.2em;
+      }
+      .msg-body h2 {
+        font-size: 1.1em;
+      }
+      .msg-body h3 {
+        font-size: 1em;
+      }
+      .msg-body ul,
+      .msg-body ol {
+        margin: 4px 0 4px 16px;
+        padding: 0;
+      }
+      .msg-body li {
+        margin: 2px 0;
+      }
+      .msg-body p {
+        margin: 2px 0;
+      }
+      #input-area {
+        padding: 8px;
+        border-top: 1px solid var(--vscode-panel-border);
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      #input {
+        flex: 1;
+        resize: none;
+        background: var(--vscode-input-background);
+        color: var(--vscode-input-foreground);
+        border: 1px solid var(--vscode-input-border);
+        border-radius: 3px;
+        padding: 6px 8px;
+        font-family: var(--vscode-font-family);
+        font-size: var(--vscode-font-size);
+        min-height: 60px;
+        max-height: 160px;
+      }
+      #input:focus {
+        outline: 1px solid var(--vscode-focusBorder);
+      }
+      #send {
+        align-self: flex-end;
+        padding: 6px 14px;
+      }
+      .thinking {
+        opacity: 0.5;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <button class="secondary" id="btn-inject">&#8853; Inject file</button>
+      <button class="secondary" id="btn-summary">&#9679; Summary</button>
+      <button class="secondary" id="btn-reindex">&#x1F5C4; Create index</button>
+      <button class="secondary" id="btn-index">&#8853; Read Index</button>
+      <button class="secondary" id="btn-clear">&#x2715; Clear</button>
+    </div>
+    <div id="messages"></div>
+    <div id="input-area">
+      <textarea
+        id="input"
+        placeholder="Ask anything&hellip; (Enter to send, Shift+Enter for newline)"
+      ></textarea>
+      <button id="send">Send</button>
+    </div>
+    <script nonce="{{NONCE}}">
+      (function () {
+        "use strict";
+
+        const vscode = acquireVsCodeApi();
+        const messagesEl = document.getElementById("messages");
+        const inputEl = document.getElementById("input");
+
+        // ── Markdown renderer ──────────────────────────────────────────────────────
+        // Written without any backtick characters to avoid TypeScript template-literal
+        // escaping issues. Uses charCodeAt trick to build the backtick char at runtime.
+        var BT = String.fromCharCode(96); // backtick: `
+        var BT3 = BT + BT + BT; // triple backtick: ```
+
+        function escHtml(s) {
+          return s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+
+        function renderMarkdown(raw) {
+          var lines = raw.split("\n");
+          var out = [];
+          var inPre = false;
+          var preLang = "";
+          var preBuf = [];
+
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+
+            // Detect ``` fence
+            if (line.indexOf(BT3) === 0) {
+              if (!inPre) {
+                inPre = true;
+                preLang = line.slice(3).trim();
+                preBuf = [];
+              } else {
+                out.push(
+                  "<pre><code>" + escHtml(preBuf.join("\n")) + "</code></pre>",
+                );
+                inPre = false;
+                preLang = "";
+                preBuf = [];
+              }
+              continue;
+            }
+            if (inPre) {
+              preBuf.push(line);
+              continue;
+            }
+
+            var l = escHtml(line);
+
+            // Headings
+            if (l.slice(0, 4) === "### ") {
+              out.push("<h3>" + inlineMd(l.slice(4)) + "</h3>");
+              continue;
+            }
+            if (l.slice(0, 3) === "## ") {
+              out.push("<h2>" + inlineMd(l.slice(3)) + "</h2>");
+              continue;
+            }
+            if (l.slice(0, 2) === "# ") {
+              out.push("<h1>" + inlineMd(l.slice(2)) + "</h1>");
+              continue;
+            }
+
+            // List items
+            if (/^[-*]\s/.test(l) || /^\d+\.\s/.test(l)) {
+              var li = l.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, "");
+              out.push("<li>" + inlineMd(li) + "</li>");
+              continue;
+            }
+
+            out.push(l === "" ? "<br>" : "<p>" + inlineMd(l) + "</p>");
+          }
+
+          if (inPre && preBuf.length) {
+            out.push(
+              "<pre><code>" + escHtml(preBuf.join("\n")) + "</code></pre>",
+            );
+          }
+
+          var html = out.join("");
+          // Wrap consecutive <li> in <ul>
+          html = html.replace(/(<li>[\s\S]*?<\/li>)+/g, function (m) {
+            return "<ul>" + m + "</ul>";
+          });
+          return html;
+        }
+
+        function inlineMd(s) {
+          // Bold
+          s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+          // Italic
+          s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+          // Inline code — detect single backtick using BT variable
+          var btRe = new RegExp(BT + "([^" + BT + "]+)" + BT, "g");
+          s = s.replace(btRe, "<code>$1</code>");
+          return s;
+        }
+
+        // ── Message helpers ────────────────────────────────────────────────────────
+        function addMessage(role, text, streaming) {
+          var wrap = document.createElement("div");
+          wrap.className = "msg msg-" + role;
+
+          if (role !== "system") {
+            var label = document.createElement("div");
+            label.className = "msg-label";
+            label.textContent = role === "user" ? "You" : "Assistant";
+            wrap.appendChild(label);
+          }
+
+          var body = document.createElement("div");
+          body.className = "msg-body" + (streaming ? " thinking" : "");
+
+          if (role === "user" || role === "system") {
+            body.textContent = text;
+          } else {
+            body.innerHTML = renderMarkdown(text);
+          }
+
+          wrap.appendChild(body);
+          messagesEl.appendChild(wrap);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+          return body;
+        }
+
+        function updateMessage(el, text) {
+          el.classList.remove("thinking");
+          el.innerHTML = renderMarkdown(text);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        // ── Message bus ───────────────────────────────────────────────────────────
+        var streamingEl = null;
+
+        window.addEventListener("message", function (e) {
+          var msg = e.data;
+          if (msg.type === "chunk") {
+            if (!streamingEl) {
+              streamingEl = addMessage("assistant", msg.text, true);
+            } else {
+              updateMessage(streamingEl, msg.text);
+            }
+          } else if (msg.type === "done") {
+            if (streamingEl) {
+              streamingEl.classList.remove("thinking");
+              streamingEl = null;
+            }
+          } else if (msg.type === "error") {
+            if (streamingEl) {
+              streamingEl.classList.remove("thinking");
+              streamingEl = null;
+            }
+            addMessage("system", "\u26a0 " + msg.text, false);
+          } else if (msg.type === "summary") {
+            addMessage(
+              "system",
+              "\ud83d\udcdd Session summary:\n" + msg.text,
+              false,
+            );
+          } else if (msg.type === "injected") {
+            addMessage(
+              "system",
+              "\ud83d\udcc4 File injected: " + msg.filename,
+              false,
+            );
+          } else if (msg.type === "cleared") {
+            messagesEl.innerHTML = "";
+            streamingEl = null;
+          }
+        });
+
+        // ── Send ──────────────────────────────────────────────────────────────────
+        function send() {
+          var text = inputEl.value.trim();
+          if (!text) return;
+          addMessage("user", text, false);
+          inputEl.value = "";
+          inputEl.style.height = "auto";
+          vscode.postMessage({ type: "send", text: text });
+        }
+
+        inputEl.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        });
+        inputEl.addEventListener("input", function () {
+          inputEl.style.height = "auto";
+          inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+        });
+
+        document.getElementById("send").addEventListener("click", send);
+        document
+          .getElementById("btn-clear")
+          .addEventListener("click", function () {
+            vscode.postMessage({ type: "clear" });
+          });
+        document
+          .getElementById("btn-inject")
+          .addEventListener("click", function () {
+            vscode.postMessage({ type: "injectFile" });
+          });
+        document
+          .getElementById("btn-summary")
+          .addEventListener("click", function () {
+            vscode.postMessage({ type: "requestSummary" });
+          });
+        document
+          .getElementById("btn-reindex")
+          .addEventListener("click", function () {
+            vscode.postMessage({ type: "reindex" });
+          });
+        document
+          .getElementById("btn-index")
+          .addEventListener("click", function () {
+            vscode.postMessage({ type: "injectIndex" });
+          });
+      })();
+    </script>
+  </body>
+</html>

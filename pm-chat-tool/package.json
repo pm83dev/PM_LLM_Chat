@@ -1,0 +1,71 @@
+{
+  "name": "pm-chat-participant",
+  "displayName": "PM Chat Participant (Local LLM)",
+  "description": "Chat participant + advanced tools via OpenAI-compatible local server",
+  "version": "1.4.0",
+  "publisher": "pm-software-automation",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": [
+      {
+        "title": "PM Chat Participant",
+        "properties": {
+          "pmChat.endpoint": {
+            "type": "string",
+            "default": "http://localhost:9000/v1/chat/completions",
+            "description": "Endpoint OpenAI-compatible per la chat"
+          },
+          "pmChat.model": {
+            "type": "string",
+            "default": "gemma4",
+            "description": "Nome modello da passare all'API chat"
+          },
+          "pmChat.systemPrompt": {
+            "type": "string",
+            "default": "You are an expert software developer.",
+            "description": "System prompt fisso per la chat"
+          },
+          "pmChat.autoContext": {
+            "type": "boolean",
+            "default": true,
+            "description": "Includi automaticamente file attivo nel contesto della chat @pm"
+          },
+          "pmChat.maxTokens": {
+            "type": "number",
+            "default": 8192,
+            "description": "Numero massimo di token di output"
+          }
+        }
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "pmChat.chat",
+        "name": "pm",
+        "fullName": "PM Chat",
+        "description": "Chat locale su server OpenAI-compatible con tools avanzati.",
+        "isSticky": true
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}
