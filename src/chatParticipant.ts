@@ -163,6 +163,14 @@ function sanitizeHistoryText(text: string): string {
 }
 
 /**
+ * Converte ''' in ``` per i blocchi di codice — alcuni modelli LLM (es.
+ * quantizzati GGUF) usano triple quote invece di triple backtick come fence.
+ */
+function fixCodeFences(text: string): string {
+  return text.replace(/'''/g, "```");
+}
+
+/**
  * Costruisce il contesto automatico per la chat.
  * Include: File attivo, file gemello (se esiste), simboli rilevanti dall'indice.
  */
@@ -411,7 +419,7 @@ async function runChatRound(
         renderedLengthRef.value,
         fullText.length,
       );
-      if (delta) stream.markdown(delta);
+      if (delta) stream.markdown(fixCodeFences(delta));
     },
     (reason) => {
       finishReason = reason ?? null;
@@ -736,7 +744,7 @@ export async function handleChatRequest(
   // file scoperti nel loop di tool calling qui sopra (search-files/read-file).
   // Si analizza il testo ACCUMULATO di tutti i round, non solo l'ultimo: il
   // blocco edit può essere stato emesso in un round intermedio.
-  const proposedEdits = parseFileEdits(allRoundsText);
+  const proposedEdits = parseFileEdits(fixCodeFences(allRoundsText));
   if (proposedEdits.length > 0) {
     const fileList = proposedEdits.map((e) => `- \`${e.filePath}\``).join("\n");
     stream.markdown(
